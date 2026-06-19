@@ -112,16 +112,15 @@ MAPLE_JOBS = {
 st.set_page_config(page_title="메이플스토리 시뮬레이터", page_icon="🍁", layout="wide")
 
 # --- 사이드바: 테스트 기능 (수동 입력 폼으로 업그레이드) ---
-# --- 사이드바: 테스트 기능 (수동 입력 폼으로 업그레이드) ---
 with st.sidebar:
     st.header("📝 관리자 수동 입력 도구")
     st.markdown("유니티 연동 전, 시뮬레이션 결과를 직접 입력하여 데이터 파이프라인을 테스트합니다.")
     
     with st.form("manual_insert_form"):
         st.subheader("1. 유저 및 보스 정보")
-        input_user_id = st.text_input("유저 ID (ocid)", value="ocid_dummy_002_01")
+        input_user_id = st.text_input("유저 ID (ocid)", value="")
         # ✨ 닉네임 입력란 추가
-        input_nickname = st.text_input("닉네임", value="테스터_나로")
+        input_nickname = st.text_input("닉네임", value="")
         
         input_job_name = st.selectbox("직업 선택", list(MAPLE_JOBS.keys()))
         input_boss = st.selectbox("보스 선택", ["SEREN_P1", "BLACKMAGE_P3"])
@@ -133,7 +132,7 @@ with st.sidebar:
         input_dps = st.number_input("DPS (억)", min_value=0.0, value=15.0, step=1.0)
         input_total = st.number_input("총 누적 대미지 (조)", min_value=0.0, value=5.12, step=0.01, format="%.3f")
 
-        st.subheader("3. 상세 기록 (JSONB)")
+        st.subheader("3. 상세 기록")
         st.markdown("**주요 스킬 시전 횟수**")
         col_s1, col_s2, col_s3 = st.columns(3)
         skill_1 = col_s1.number_input("주력 스킬1", min_value=0, value=120)
@@ -237,7 +236,7 @@ with tab2:
     st.subheader("마이페이지 정밀 분석 (딜 누수 리포트)")
     
     # ✨ ID(ocid) 대신 닉네임으로 조회
-    target_nickname = st.text_input("조회할 유저 닉네임을 입력하세요", value="테스터_나로")
+    target_nickname = st.text_input("조회할 유저 닉네임을 입력하세요", value="")
     st.markdown(f"**대상 유저:** `{target_nickname}` 님의 가장 최근 기록을 분석합니다.")
     
     if st.button("상세 기록 분석하기"):
