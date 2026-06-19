@@ -42,12 +42,21 @@ def load_ranking_data(target_boss_id, target_job_name):
         st.error(f"랭킹 데이터를 불러오는 중 오류가 발생했습니다: {e}")
         return []
 
-def load_user_detail_log(user_id):
-    """특정 유저의 가장 최신 로그를 불러옵니다."""
+def load_user_detail_log_by_nickname(nickname):
+    """닉네임을 기반으로 특정 유저의 가장 최신 로그를 불러옵니다."""
     try:
+        # 1. users 테이블에서 닉네임으로 user_id 먼저 찾기
+        user_res = supabase.table("users").select("user_id").eq("user_name", nickname).execute()
+        
+        if not user_res.data:
+            return None  # 존재하지 않는 닉네임
+            
+        target_uid = user_res.data[0]['user_id']
+        
+        # 2. 찾은 user_id로 play_logs 조회
         response = supabase.table("play_logs") \
             .select("play_duration, skill_counts, hit_details") \
-            .eq("user_id", user_id) \
+            .eq("user_id", target_uid) \
             .order("created_at", desc=True) \
             .limit(1) \
             .execute()
@@ -103,22 +112,26 @@ MAPLE_JOBS = {
 st.set_page_config(page_title="메이플스토리 시뮬레이터", page_icon="🍁", layout="wide")
 
 # --- 사이드바: 테스트 기능 (수동 입력 폼으로 업그레이드) ---
+# --- 사이드바: 테스트 기능 (수동 입력 폼으로 업그레이드) ---
 with st.sidebar:
     st.header("📝 관리자 수동 입력 도구")
     st.markdown("유니티 연동 전, 시뮬레이션 결과를 직접 입력하여 데이터 파이프라인을 테스트합니다.")
     
     with st.form("manual_insert_form"):
         st.subheader("1. 유저 및 보스 정보")
-        input_user_id = st.text_input("유저 ID", value="ocid_dummy_002_01")
+        input_user_id = st.text_input("유저 ID (ocid)", value="ocid_dummy_002_01")
+        # ✨ 닉네임 입력란 추가
+        input_nickname = st.text_input("닉네임", value="테스터_나로")
         
-        # 47개 전 직업 리스트 적용
         input_job_name = st.selectbox("직업 선택", list(MAPLE_JOBS.keys()))
         input_boss = st.selectbox("보스 선택", ["SEREN_P1", "BLACKMAGE_P3"])
 
         st.subheader("2. 전투 결과")
         input_duration = st.number_input("생존 타임 (초)", min_value=1, max_value=600, value=340)
-        input_dps = st.number_input("DPS", min_value=0, value=150000000, step=10000000)
-        input_total = st.number_input("총 누적 대미지", min_value=0, value=51000000000, step=1000000000)
+        
+        # ✨ 단위 변경: DPS (억 단위), 총 누적 대미지 (조 단위) - 소수점 입력 가능
+        input_dps = st.number_input("DPS (억)", min_value=0.0, value=15.0, step=1.0)
+        input_total = st.number_input("총 누적 대미지 (조)", min_value=0.0, value=5.12, step=0.01, format="%.3f")
 
         st.subheader("3. 상세 기록 (JSONB)")
         st.markdown("**주요 스킬 시전 횟수**")
@@ -127,33 +140,65 @@ with st.sidebar:
         skill_2 = col_s2.number_input("주력 스킬2", min_value=0, value=12)
         skill_3 = col_s3.number_input("주력 스킬3", min_value=0, value=45)
 
-        st.markdown("**보스 패턴 피격 횟수**")
-        hit_total = st.number_input("총 피격 횟수", min_value=0, value=4)
+        st.markdown("**피격 및 사망 통계**")
+        col_h1, col_h2 = st.columns(2)
+        hit_total = col_h1.number_input("총 피격 횟수", min_value=0, value=4)
+        death_count = col_h2.number_input("사망 횟수", min_value=0, max_value=10, value=1)
 
         submit_button = st.form_submit_button("DB에 실시간 기록 전송하기")
 
     if submit_button:
-        custom_mock_data = {
-            "user_id": input_user_id,
-            "job_id": MAPLE_JOBS[input_job_name], # 선택한 직업 ID 매핑
-            "boss_id": input_boss,
-            "play_mode": "RANKING",
-            "is_public": True,
-            "dps": input_dps,
-            "total_damage": input_total,
-            "play_duration": input_duration,
-            # 규격 통일: 주력 스킬 및 단일 피격 횟수
-            "skill_counts": {"주력 스킬1": skill_1, "주력 스킬2": skill_2, "주력 스킬3": skill_3},
-            "hit_details": {"피격 횟수": hit_total}
-        }
-        
-        with st.spinner("데이터 적재 및 뷰 갱신 중..."):
-            try:
-                supabase.table("play_logs").insert(custom_mock_data).execute()
-                supabase.rpc('refresh_rankings_view').execute()
-                st.success(f"{input_user_id}의 테스트 데이터가 적재되었습니다!")
-            except Exception as e:
-                st.error(f"데이터 삽입 중 오류 발생: {e}")
+        with st.spinner("데이터 무결성 검증 및 적재 중..."):
+            # 1. users 테이블에서 해당 user_id가 이미 존재하는지 먼저 검사합니다.
+            existing_user = supabase.table("users").select("user_name").eq("user_id", input_user_id).execute()
+            
+            is_valid = True
+            
+            if existing_user.data:
+                db_nickname = existing_user.data[0]['user_name']
+                # 1-A. ID는 같은데 닉네임이 다르게 입력된 경우 (덮어쓰기 방지)
+                if db_nickname != input_nickname:
+                    st.error(f"🚨 **[데이터 충돌 방지]** 입력하신 유저 ID(`{input_user_id}`)는 이미 **'{db_nickname}'** (으)로 등록되어 있습니다.")
+                    st.warning("새로운 캐릭터의 기록을 추가하시려면 '유저 ID'를 다르게 변경해 주세요!")
+                    is_valid = False
+                # (닉네임이 같으면 동일 캐릭터의 추가 플레이 기록이므로 그대로 통과시킵니다)
+            else:
+                # 1-B. 존재하지 않는 신규 유저라면 users 테이블에 안전하게 Insert
+                supabase.table("users").insert({"user_id": input_user_id, "user_name": input_nickname}).execute()
+
+            # 2. 유효성 검사를 통과했을 때만 play_logs에 전투 기록 전송
+            if is_valid:
+                real_dps = int(input_dps * 100_000_000)
+                real_total_damage = int(input_total * 1_000_000_000_000)
+                
+                # ✨ 핵심 수정: 340초 완주 여부 검사 (boolean 값 반환)
+                is_survived = (input_duration == 340)
+                
+                custom_mock_data = {
+                    "user_id": input_user_id,
+                    "job_id": MAPLE_JOBS[input_job_name],
+                    "boss_id": input_boss,
+                    # 완주 시 RANKING 모드, 아니면 PRACTICE 모드로 저장
+                    "play_mode": "RANKING" if is_survived else "PRACTICE", 
+                    "is_public": is_survived, # ✨ 340초일 때만 True, 그 외에는 False
+                    "dps": real_dps,
+                    "total_damage": real_total_damage,
+                    "play_duration": input_duration,
+                    "skill_counts": {"주력 스킬1": skill_1, "주력 스킬2": skill_2, "주력 스킬3": skill_3},
+                    "hit_details": {"피격 횟수": hit_total, "사망 횟수": death_count} 
+                }
+                
+                try:
+                    supabase.table("play_logs").insert(custom_mock_data).execute()
+                    
+                    # 피드백 UI: 랭킹 등록 여부에 따라 메시지를 다르게 출력
+                    if is_survived:
+                        st.success(f"🏆 [{input_nickname}] 님의 데이터가 적재되었으며, 340초 완주로 랭킹 보드에 등록되었습니다!")
+                    else:
+                        st.info(f"💾 [{input_nickname}] 님의 데이터가 적재되었습니다. (생존 타임 {input_duration}초로 인해 랭킹에는 미노출됩니다.)")
+                        
+                except Exception as e:
+                    st.error(f"전투 기록 전송 중 오류 발생: {e}")
 
 st.title("🏆 메이플스토리 보스 시뮬레이션")
 
@@ -191,21 +236,23 @@ with tab1:
 with tab2:
     st.subheader("마이페이지 정밀 분석 (딜 누수 리포트)")
     
-    # 변경 사항: 고정 ID 대신 동적 ID 검색창 배치
-    target_user = st.text_input("조회할 유저 ID(ocid)를 입력하세요", value="ocid_dummy_001_01")
-    st.markdown(f"**대상 유저:** `{target_user}`의 가장 최근 기록을 분석합니다.")
+    # ✨ ID(ocid) 대신 닉네임으로 조회
+    target_nickname = st.text_input("조회할 유저 닉네임을 입력하세요", value="테스터_나로")
+    st.markdown(f"**대상 유저:** `{target_nickname}` 님의 가장 최근 기록을 분석합니다.")
     
     if st.button("상세 기록 분석하기"):
-        detail_data = load_user_detail_log(target_user)
+        # 변경된 함수 호출
+        detail_data = load_user_detail_log_by_nickname(target_nickname)
         
-        if detail_data:
+        if detail_data is None:
+            st.warning(f"'{target_nickname}' 닉네임을 가진 유저가 DB에 존재하지 않습니다.")
+        elif detail_data:
             log = detail_data[0]
             play_duration = log.get('play_duration', 0)
             skills = log.get('skill_counts', {})
             hits = log.get('hit_details', {})
             
             # --- 통일된 딜 누수 분석 로직 ---
-            # 주력 스킬 1, 2, 3의 기본 프레임 딜레이 지정 (임의의 ms 단위)
             VALID_SKILL_DELAYS = {"주력 스킬1": 660, "주력 스킬2": 540, "주력 스킬3": 700} 
             total_cast_time_ms = 0
             
@@ -216,7 +263,6 @@ with tab2:
             total_cast_time_sec = total_cast_time_ms / 1000
             leak_time_sec = max(0, play_duration - total_cast_time_sec)
             
-            # 누수 시간을 주력 스킬1(660ms) 기준으로 환산
             missed_actions = int((leak_time_sec * 1000) / 660) if leak_time_sec > 0 else 0
             
             # --- 결과 시각화 ---
@@ -235,15 +281,23 @@ with tab2:
                 st.dataframe(skill_df, hide_index=True, use_container_width=True)
                     
             with col_detail2:
-                st.markdown("#### 💥 보스 패턴 피격 통계")
-                # 통합된 피격 통계 수치 출력
-                total_hits = hits.get("피격 횟수", 0)
+                st.markdown("#### 💥 보스 패턴 피격 및 사망 통계")
                 
-                if total_hits > 0:
-                    st.metric("총 피격 횟수", f"{total_hits}회")
-                    st.warning("생존 관리가 필요합니다.")
-                else:
-                    st.metric("총 피격 횟수", "0회")
+                # JSONB 데이터에서 안전하게 값을 가져옵니다. (없을 경우 기본값 0)
+                total_hits = hits.get("피격 횟수", 0)
+                death_count = hits.get("사망 횟수", 0)
+                
+                # 피격과 사망 수치를 나란히 보여줍니다.
+                col_m1, col_m2 = st.columns(2)
+                col_m1.metric("총 피격 횟수", f"{total_hits}회")
+                col_m2.metric("사망 횟수", f"{death_count}회")
+                
+                # ✨ 기획하신 사망 횟수 기준 맞춤형 피드백 로직
+                if death_count <= 1:
                     st.success("완벽한 컨트롤입니다!")
+                elif death_count <= 3:
+                    st.warning("보스 패턴 타이밍을 파악해 보세요.")
+                else: # 4회 이상
+                    st.error("조금 더 회피에 집중하셔야 합니다.")
         else:
-            st.warning(f"'{target_user}' 유저의 분석할 기록이 존재하지 않습니다. 먼저 왼쪽 사이드바에서 해당 ID로 테스트 데이터를 전송해 주세요.")
+            st.warning(f"'{target_nickname}' 님의 분석할 플레이 기록이 존재하지 않습니다. 먼저 테스트 데이터를 전송해 주세요.")
